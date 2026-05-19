@@ -26,7 +26,7 @@
 
 Pixel Agents turns multi-agent AI systems into something you can actually see and manage. Each agent becomes a character in a pixel art office. They walk around, sit at their desk, and visually reflect what they are doing — typing when writing code, reading when searching files, waiting when it needs your attention.
 
-Right now it works as a VS Code extension with Claude Code. The vision though, is a fully agent-agnostic, platform-agnostic interface for orchestrating any AI agents, deployable anywhere.
+Right now it works as a VS Code extension with **Claude Code**, **Roo Code**, **Codex**, and **IBM Bob**. The vision though, is a fully agent-agnostic, platform-agnostic interface for orchestrating any AI agents, deployable anywhere.
 
 This is the source code for the free Pixel Agents extension for VS Code — install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents) or [Open VSX](https://open-vsx.org/extension/pablodelucca/pixel-agents) with the full furniture catalog included.
 
@@ -34,7 +34,7 @@ This is the source code for the free Pixel Agents extension for VS Code — inst
 
 ## Features
 
-- **One agent, one character** — every Claude Code terminal gets its own animated character
+- **One agent, one character** — every Claude Code terminal, Roo Code task, Codex session, or IBM Bob task gets its own animated character
 - **Live activity tracking** — characters animate based on what the agent is actually doing (writing, reading, running commands)
 - **Office layout editor** — design your office with floors, walls, and furniture using a built-in editor
 - **Speech bubbles** — visual indicators when an agent is waiting for input or needs permission
@@ -51,8 +51,20 @@ This is the source code for the free Pixel Agents extension for VS Code — inst
 ## Requirements
 
 - VS Code 1.105.0 or later
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
+- **One of the following**:
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
+  - [Roo Code extension](https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline) installed
+  - Codex writing sessions under `~/.codex/sessions`
+  - IBM Bob writing task history under `~/Library/Application Support/*/User/globalStorage/ibm.bob-code/tasks`
 - **Platform**: Windows, Linux, and macOS are supported
+
+### Roo Code Support
+
+Pixel Agents supports **Roo Code** in addition to Claude Code through Roo's public VS Code extension API. See the [Roo Code Setup Guide](docs/roo-cline-setup.md) for details.
+
+### Codex And IBM Bob Support
+
+Pixel Agents watches Codex session JSONL files and IBM Bob task history files as managed external agents. These integrations are observational: Pixel Agents reads local activity files and translates tool/status events into the same character animation protocol.
 
 ## Getting Started
 
@@ -104,7 +116,7 @@ Characters are based on the amazing work of [JIK-A-4, Metro City](https://jik-a-
 
 ## How It Works
 
-Pixel Agents watches Claude Code's JSONL transcript files to track what each agent is doing. When an agent uses a tool (like writing a file or running a command), the extension detects it and updates the character's animation accordingly. No modifications to Claude Code are needed — it's purely observational.
+Pixel Agents watches Claude Code's JSONL transcript files and hook events to track what each Claude agent is doing. For Roo Code, Pixel Agents subscribes to Roo's public VS Code extension API. For Codex and IBM Bob, Pixel Agents watches local session/task history files. No modifications to Claude Code, Roo Code, Codex, or IBM Bob are needed.
 
 The webview runs a lightweight game loop with canvas rendering, BFS pathfinding, and a character state machine (idle → walk → type/read). Everything is pixel-perfect at integer zoom levels.
 
@@ -144,7 +156,6 @@ For this to work, the architecture needs to be modular at every level:
 - **Theme-agnostic**: community-created assets, skins, and themes from any contributor.
 
 We're actively working on the core module and adapter architecture that makes this possible. If you're interested to talk about this further, please visit our [Discussions Section](https://github.com/pablodelucca/pixel-agents/discussions).
-
 
 ## Community & Contributing
 

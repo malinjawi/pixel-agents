@@ -343,7 +343,7 @@ export function restoreAgents(
     const isExternal = p.isExternal ?? false;
     const isManagedExternal = isExternal && p.providerId && p.providerId !== 'claude';
 
-    // Codex and Roo Code are re-adopted by their live integrations.
+    // Codex, IBM Bob, and Roo Code are re-adopted by their live integrations.
     // Restoring them blindly leaves old task/session files visible as stale agents.
     if (isManagedExternal) {
       continue;

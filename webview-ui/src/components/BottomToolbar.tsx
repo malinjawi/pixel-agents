@@ -23,21 +23,26 @@ export function BottomToolbar({
   workspaceFolders,
 }: BottomToolbarProps) {
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
+  const [isBobFolderPickerOpen, setIsBobFolderPickerOpen] = useState(false);
   const [isBypassMenuOpen, setIsBypassMenuOpen] = useState(false);
   const folderPickerRef = useRef<HTMLDivElement>(null);
+  const bobFolderPickerRef = useRef<HTMLDivElement>(null);
   const pendingBypassRef = useRef(false);
   // Close folder picker / bypass menu on outside click
   useEffect(() => {
-    if (!isFolderPickerOpen && !isBypassMenuOpen) return;
+    if (!isFolderPickerOpen && !isBobFolderPickerOpen && !isBypassMenuOpen) return;
     const handleClick = (e: MouseEvent) => {
       if (folderPickerRef.current && !folderPickerRef.current.contains(e.target as Node)) {
         setIsFolderPickerOpen(false);
         setIsBypassMenuOpen(false);
       }
+      if (bobFolderPickerRef.current && !bobFolderPickerRef.current.contains(e.target as Node)) {
+        setIsBobFolderPickerOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [isFolderPickerOpen, isBypassMenuOpen]);
+  }, [isFolderPickerOpen, isBobFolderPickerOpen, isBypassMenuOpen]);
 
   const hasMultipleFolders = workspaceFolders.length > 1;
 
@@ -70,6 +75,21 @@ export function BottomToolbar({
     vscode.postMessage({ type: 'openClaude', folderPath: folder.path, bypassPermissions });
   };
 
+  const handleBobClick = () => {
+    if (hasMultipleFolders) {
+      setIsBypassMenuOpen(false);
+      setIsFolderPickerOpen(false);
+      setIsBobFolderPickerOpen((v) => !v);
+    } else {
+      vscode.postMessage({ type: 'openBob' });
+    }
+  };
+
+  const handleBobFolderSelect = (folder: WorkspaceFolder) => {
+    setIsBobFolderPickerOpen(false);
+    vscode.postMessage({ type: 'openBob', folderPath: folder.path });
+  };
+
   const handleBypassSelect = (bypassPermissions: boolean) => {
     setIsBypassMenuOpen(false);
     if (hasMultipleFolders) {
@@ -97,7 +117,7 @@ export function BottomToolbar({
               : 'bg-accent hover:bg-accent-bright'
           }
         >
-          + Agent
+          + Claude
         </Button>
         <Dropdown isOpen={isBypassMenuOpen}>
           <DropdownItem onClick={() => handleBypassSelect(true)}>
@@ -109,6 +129,28 @@ export function BottomToolbar({
             <DropdownItem
               key={folder.path}
               onClick={() => handleFolderSelect(folder)}
+              className="text-base"
+            >
+              {folder.name}
+            </DropdownItem>
+          ))}
+        </Dropdown>
+      </div>
+      <div ref={bobFolderPickerRef} className="relative">
+        <Button
+          variant="accent"
+          onClick={handleBobClick}
+          className={
+            isBobFolderPickerOpen ? 'bg-accent-bright' : 'bg-accent hover:bg-accent-bright'
+          }
+        >
+          + Bob
+        </Button>
+        <Dropdown isOpen={isBobFolderPickerOpen} className="min-w-128">
+          {workspaceFolders.map((folder) => (
+            <DropdownItem
+              key={folder.path}
+              onClick={() => handleBobFolderSelect(folder)}
               className="text-base"
             >
               {folder.name}

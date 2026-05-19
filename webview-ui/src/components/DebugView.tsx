@@ -21,6 +21,8 @@ function providerLabel(providerId: string | undefined): string {
   switch (providerId) {
     case 'codex':
       return 'Codex';
+    case 'ibm-bob':
+      return 'IBM Bob';
     case 'roo-code':
       return 'Roo Code';
     case 'claude':

@@ -1,3 +1,4 @@
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -61,6 +62,7 @@ import {
   startExternalSessionScanning,
   startStaleExternalAgentCheck,
 } from './fileWatcher.js';
+import { IbmBobIntegrationManager } from './ibmBobIntegration.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import { readLayoutFromFile, watchLayoutFile, writeLayoutToFile } from './layoutPersistence.js';
 import { RooClineIntegrationManager } from './rooClineIntegration.js';
@@ -112,6 +114,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
   // Roo Code integration
   private rooClineManager: RooClineIntegrationManager | null = null;
   private codexManager: CodexIntegrationManager | null = null;
+  private ibmBobManager: IbmBobIntegrationManager | null = null;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.initHooks();
@@ -301,6 +304,14 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     );
     this.codexManager.start();
 
+    this.ibmBobManager = new IbmBobIntegrationManager(
+      this.nextAgentId,
+      this.agents,
+      this.webview,
+      this.persistAgents,
+      this.watchAllSessions,
+    );
+    this.ibmBobManager.start();
   }
 
   private async focusAgent(agent: AgentState): Promise<void> {
@@ -331,6 +342,21 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (agent.providerId === 'ibm-bob') {
+      if (agentBelongsToWorkspace(agent)) {
+        if (await this.tryExecuteCommand('wca.core.chat.focus')) return;
+        if (await this.tryExecuteCommand('wca.core.conversations')) return;
+      }
+      const openedBob = this.openIbmBob(agent.projectDir);
+      await this.showExternalFocusFallback(
+        agent,
+        openedBob
+          ? 'Pixel Agents opened IBM Bob for this workspace and asked it to show chat. Exact chat focus is not available across IDE windows.'
+          : 'Pixel Agents is connected through Bob task files, but Bob chat focus is not available in this VS Code window.',
+      );
+      return;
+    }
+
     if (agent.jsonlFile && fs.existsSync(agent.jsonlFile)) {
       await vscode.window.showTextDocument(vscode.Uri.file(agent.jsonlFile), { preview: true });
     }
@@ -343,6 +369,71 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     } catch {
       return false;
     }
+  }
+
+  private openIbmBob(projectDir: string): boolean {
+    const cli = findIbmBobCli();
+    const app = findIbmBobApp();
+    if (cli) {
+      const opened = spawnDetached(cli, ['--reuse-window', projectDir], projectDir);
+      if (opened) {
+        if (app && process.platform === 'darwin') {
+          setTimeout(() => {
+            spawnDetached('open', [app]);
+          }, 250);
+        }
+        setTimeout(() => {
+          spawnDetached(
+            cli,
+            ['chat', '--reuse-window', '--maximize', '--mode', 'agent'],
+            projectDir,
+          );
+        }, 750);
+      }
+      return opened;
+    }
+
+    if (app && process.platform === 'darwin') {
+      return spawnDetached('open', [app]);
+    }
+
+    return false;
+  }
+
+  private async openIbmBobNewChat(folderPath?: string): Promise<boolean> {
+    if (await this.tryExecuteCommand('wca.core.newChat')) {
+      await this.tryExecuteCommand('wca.core.chat.focus');
+      setTimeout(() => this.ibmBobManager?.scanNow(), 1000);
+      setTimeout(() => this.ibmBobManager?.scanNow(), 3000);
+      return true;
+    }
+
+    if (await this.tryExecuteCommand('wca.core.chat.focus')) {
+      setTimeout(() => this.ibmBobManager?.scanNow(), 1000);
+      setTimeout(() => this.ibmBobManager?.scanNow(), 3000);
+      return true;
+    }
+
+    return this.openIbmBobChatTerminal(folderPath);
+  }
+
+  private openIbmBobChatTerminal(folderPath?: string): boolean {
+    const projectDir =
+      folderPath && fs.existsSync(folderPath)
+        ? folderPath
+        : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || os.homedir();
+    const cli = findIbmBobCli();
+    if (!cli) return false;
+
+    const terminal = vscode.window.createTerminal({
+      name: 'IBM Bob',
+      cwd: projectDir,
+    });
+    terminal.show();
+    terminal.sendText(`${shellQuote(cli)} chat --reuse-window --maximize --mode agent`);
+    setTimeout(() => this.ibmBobManager?.scanNow(), 1000);
+    setTimeout(() => this.ibmBobManager?.scanNow(), 3000);
+    return true;
   }
 
   private openCodexResumeTerminal(agent: AgentState): boolean {
@@ -364,6 +455,20 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     return true;
   }
 
+  private async showExternalFocusFallback(agent: AgentState, message: string): Promise<void> {
+    const openTranscript = 'Open Transcript';
+    const selected = await vscode.window.showInformationMessage(message, openTranscript);
+    if (selected === openTranscript) {
+      await this.openAgentTranscript(agent);
+    }
+  }
+
+  private async openAgentTranscript(agent: AgentState): Promise<void> {
+    const transcript = getReadableTranscriptPath(agent);
+    if (transcript && fs.existsSync(transcript)) {
+      await vscode.window.showTextDocument(vscode.Uri.file(transcript), { preview: true });
+    }
+  }
 
   /** Remove all teammates of a lead agent */
   /** Remove a single teammate agent (used by both hook callback and team config polling). */
@@ -437,6 +542,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       this.rooClineManager.setWebview(webviewView.webview);
     }
     this.codexManager?.setWebview(webviewView.webview);
+    this.ibmBobManager?.setWebview(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'openClaude') {
@@ -464,6 +570,13 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             this.registerAgentHook(agent);
           }
         }
+      } else if (message.type === 'openBob') {
+        const openedBob = await this.openIbmBobNewChat(message.folderPath as string | undefined);
+        if (!openedBob) {
+          void vscode.window.showWarningMessage(
+            'Pixel Agents could not find IBM Bob. Install IBM Bob or move IBM Bob.app to /Applications, ~/Applications, or Desktop.',
+          );
+        }
       } else if (message.type === 'focusAgent') {
         const agent = this.agents.get(message.id);
         if (agent) {
@@ -481,6 +594,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
               this.rooClineManager?.unregisterAgent(message.id as number);
             } else if (agent.providerId === 'codex') {
               this.codexManager?.unregisterAgent(message.id as number);
+            } else if (agent.providerId === 'ibm-bob') {
+              this.ibmBobManager?.unregisterAgent(message.id as number);
             }
             dismissedJsonlFiles.set(agent.jsonlFile, Date.now());
             removeAgent(
@@ -534,6 +649,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           }
           this.globalDismissedFiles.clear();
           this.codexManager?.scanNow();
+          this.ibmBobManager?.scanNow();
         } else {
           // Remove all external agents not from the current workspace folders
           const toRemove: number[] = [];
@@ -547,6 +663,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             if (agent) {
               if (agent.providerId === 'codex') {
                 this.codexManager?.unregisterAgent(id);
+              } else if (agent.providerId === 'ibm-bob') {
+                this.ibmBobManager?.unregisterAgent(id);
               } else if (agent.providerId === 'roo-code') {
                 this.rooClineManager?.unregisterAgent(id);
               }
@@ -606,6 +724,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         );
         this.watchAllSessions.current = watchAllSessions;
         this.codexManager?.scanNow();
+        this.ibmBobManager?.scanNow();
         const hooksEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_HOOKS_ENABLED, true);
         const hooksInfoShown = this.context.globalState.get<boolean>(
           GLOBAL_KEY_HOOKS_INFO_SHOWN,
@@ -1043,6 +1162,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     this.rooClineManager = null;
     this.codexManager?.dispose();
     this.codexManager = null;
+    this.ibmBobManager?.dispose();
+    this.ibmBobManager = null;
     this.disposeAgentRuntimeState();
     if (this.projectScanTimer.current) {
       clearInterval(this.projectScanTimer.current);
@@ -1103,6 +1224,42 @@ function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): s
   return html;
 }
 
+function findIbmBobCli(): string | null {
+  const candidates = [
+    path.join(
+      os.homedir(),
+      'Desktop',
+      'IBM Bob.app',
+      'Contents',
+      'Resources',
+      'app',
+      'bin',
+      'bobide',
+    ),
+    path.join('/Applications', 'IBM Bob.app', 'Contents', 'Resources', 'app', 'bin', 'bobide'),
+    path.join(
+      os.homedir(),
+      'Applications',
+      'IBM Bob.app',
+      'Contents',
+      'Resources',
+      'app',
+      'bin',
+      'bobide',
+    ),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function findIbmBobApp(): string | null {
+  const candidates = [
+    path.join(os.homedir(), 'Desktop', 'IBM Bob.app'),
+    path.join('/Applications', 'IBM Bob.app'),
+    path.join(os.homedir(), 'Applications', 'IBM Bob.app'),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
 function findCodexCli(): string | null {
   const pathCandidates = (process.env.PATH ?? '')
     .split(path.delimiter)
@@ -1112,7 +1269,12 @@ function findCodexCli(): string | null {
   const candidates = [
     ...pathCandidates,
     path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
-    path.join(os.homedir(), '.npm-global', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    path.join(
+      os.homedir(),
+      '.npm-global',
+      'bin',
+      process.platform === 'win32' ? 'codex.exe' : 'codex',
+    ),
     path.join(os.homedir(), '.volta', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
     path.join(os.homedir(), '.bun', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
     path.join('/opt/homebrew/bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
@@ -1176,6 +1338,31 @@ function isFile(candidate: string): boolean {
   }
 }
 
+function spawnDetached(command: string, args: string[], cwd?: string): boolean {
+  try {
+    const options = {
+      detached: true,
+      stdio: 'ignore' as const,
+      ...(cwd && fs.existsSync(cwd) ? { cwd } : {}),
+    };
+    const child = spawn(command, args, options);
+    child.once('error', (error) => {
+      console.warn(`[Pixel Agents] Failed to spawn ${command}: ${error.message}`);
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getReadableTranscriptPath(agent: AgentState): string | null {
+  if (agent.providerId === 'ibm-bob' && agent.jsonlFile) {
+    const historyFile = path.join(path.dirname(agent.jsonlFile), 'api_conversation_history.json');
+    if (fs.existsSync(historyFile)) return historyFile;
+  }
+  return agent.jsonlFile || null;
+}
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;

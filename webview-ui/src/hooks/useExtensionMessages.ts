@@ -81,6 +81,8 @@ function providerLabel(providerId: unknown): string | undefined {
   switch (providerId) {
     case 'codex':
       return 'Codex';
+    case 'ibm-bob':
+      return 'IBM Bob';
     case 'roo-code':
       return 'Roo Code';
     case 'claude':
