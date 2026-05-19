@@ -77,6 +77,19 @@ function saveAgentSeats(os: OfficeState): void {
   vscode.postMessage({ type: 'saveAgentSeats', seats });
 }
 
+function providerLabel(providerId: unknown): string | undefined {
+  switch (providerId) {
+    case 'codex':
+      return 'Codex';
+    case 'roo-code':
+      return 'Roo Code';
+    case 'claude':
+      return 'Claude';
+    default:
+      return undefined;
+  }
+}
+
 export function useExtensionMessages(
   getOfficeState: () => OfficeState,
   onLayoutLoaded?: (layout: OfficeLayout) => void,
@@ -115,6 +128,7 @@ export function useExtensionMessages(
       hueShift?: number;
       seatId?: string;
       folderName?: string;
+      providerName?: string;
     }> = [];
 
     const handler = (e: MessageEvent) => {
@@ -138,7 +152,8 @@ export function useExtensionMessages(
         }
         // Add buffered agents now that layout (and seats) are correct
         for (const p of pendingAgents) {
-          os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
+          os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName, p.providerName);
+          os.setAgentActive(p.id, false);
         }
         pendingAgents = [];
         layoutReadyRef.current = true;
@@ -156,6 +171,8 @@ export function useExtensionMessages(
         const teammateName = msg.teammateName as string | undefined;
         const teammateParentId = msg.parentAgentId as number | undefined;
         const teamName = msg.teamName as string | undefined;
+        const providerName = providerLabel(msg.providerId ?? msg.provider);
+        const isExternal = msg.isExternal as boolean | undefined;
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
         // Don't auto-select teammates (keep focus on lead)
         if (!isTeammate) {
@@ -167,7 +184,15 @@ export function useExtensionMessages(
           const parentCh = os.characters.get(teammateParentId);
           const palette = parentCh ? parentCh.palette : undefined;
           const hueShift = parentCh ? parentCh.hueShift : undefined;
-          os.addAgent(id, palette, hueShift, undefined, undefined, parentCh?.folderName);
+          os.addAgent(
+            id,
+            palette,
+            hueShift,
+            undefined,
+            undefined,
+            parentCh?.folderName,
+            parentCh?.providerName,
+          );
           // Set team metadata on the character
           const ch = os.characters.get(id);
           if (ch) {
@@ -176,7 +201,10 @@ export function useExtensionMessages(
             ch.agentName = teammateName;
           }
         } else {
-          os.addAgent(id, undefined, undefined, undefined, undefined, folderName);
+          os.addAgent(id, undefined, undefined, undefined, undefined, folderName, providerName);
+          if (isExternal) {
+            os.setAgentActive(id, false);
+          }
         }
         saveAgentSeats(os);
       } else if (msg.type === 'agentClosed') {
@@ -212,6 +240,7 @@ export function useExtensionMessages(
           { palette?: number; hueShift?: number; seatId?: string }
         >;
         const folderNames = (msg.folderNames || {}) as Record<number, string>;
+        const providerIds = (msg.providerIds || {}) as Record<number, string>;
         // Buffer agents — they'll be added in layoutLoaded after seats are built
         for (const id of incoming) {
           const m = meta[id];
@@ -221,6 +250,7 @@ export function useExtensionMessages(
             hueShift: m?.hueShift,
             seatId: m?.seatId,
             folderName: folderNames[id],
+            providerName: providerLabel(providerIds[id]),
           });
         }
         setAgents((prev) => {

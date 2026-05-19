@@ -242,10 +242,12 @@ function App() {
             officeState={officeState}
             agents={agents}
             agentTools={agentTools}
+            agentStatuses={agentStatuses}
             subagentCharacters={subagentCharacters}
             containerRef={containerRef}
             zoom={editor.zoom}
             panRef={editor.panRef}
+            onFocusAgent={handleClick}
             onCloseAgent={handleCloseAgent}
             alwaysShowOverlay={alwaysShowOverlay}
           />

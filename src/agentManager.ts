@@ -128,6 +128,7 @@ export async function launchNewTerminal(
     seenUnknownRecordTypes: new Set(),
     folderName,
     hookDelivered: false,
+    providerId: 'claude',
     inputTokens: 0,
     outputTokens: 0,
   };
@@ -136,7 +137,7 @@ export async function launchNewTerminal(
   activeAgentIdRef.current = id;
   persistAgents();
   console.log(`[Pixel Agents] Terminal: Agent ${id} - created for terminal ${terminal.name}`);
-  webview?.postMessage({ type: 'agentCreated', id, folderName });
+  webview?.postMessage({ type: 'agentCreated', id, folderName, providerId: 'claude' });
 
   ensureProjectScan(
     projectDir,
@@ -291,6 +292,8 @@ export function persistAgents(
       sessionId: agent.sessionId,
       terminalName: agent.terminalRef?.name ?? '',
       isExternal: agent.isExternal || undefined,
+      hooksOnly: agent.hooksOnly || undefined,
+      providerId: agent.providerId,
       jsonlFile: agent.jsonlFile,
       projectDir: agent.projectDir,
       folderName: agent.folderName,
@@ -332,16 +335,24 @@ export function restoreAgents(
     // Skip agents already in the map — prevents duplicate file watchers on re-entry
     // (webviewReady fires on every panel focus, re-calling restoreAgents each time)
     if (agents.has(p.id)) {
-      knownJsonlFiles.add(p.jsonlFile);
+      if (p.jsonlFile) knownJsonlFiles.add(p.jsonlFile);
       continue;
     }
 
     let terminal: vscode.Terminal | undefined;
     const isExternal = p.isExternal ?? false;
+    const isManagedExternal = isExternal && p.providerId && p.providerId !== 'claude';
+
+    // Codex and Roo Code are re-adopted by their live integrations.
+    // Restoring them blindly leaves old task/session files visible as stale agents.
+    if (isManagedExternal) {
+      continue;
+    }
 
     if (isExternal) {
       // External agents — restore if JSONL file still exists on disk
       try {
+        if (!p.jsonlFile) continue;
         if (!fs.existsSync(p.jsonlFile)) continue;
       } catch {
         continue;
@@ -375,6 +386,8 @@ export function restoreAgents(
       seenUnknownRecordTypes: new Set(),
       folderName: p.folderName,
       hookDelivered: false,
+      hooksOnly: p.hooksOnly,
+      providerId: p.providerId,
       inputTokens: 0,
       outputTokens: 0,
       teamName: p.teamName,
@@ -385,7 +398,7 @@ export function restoreAgents(
     };
 
     agents.set(p.id, agent);
-    knownJsonlFiles.add(p.jsonlFile);
+    if (p.jsonlFile) knownJsonlFiles.add(p.jsonlFile);
     if (isExternal) {
       console.log(
         `[Pixel Agents] Terminal: Agent ${p.id} - restored external → ${path.basename(p.jsonlFile)}`,
@@ -408,6 +421,9 @@ export function restoreAgents(
 
     // Start file watching if JSONL exists, skipping to end of file
     try {
+      if (isManagedExternal || p.hooksOnly) {
+        continue;
+      }
       if (fs.existsSync(p.jsonlFile)) {
         const stat = fs.statSync(p.jsonlFile);
         agent.fileOffset = stat.size;
@@ -534,6 +550,7 @@ export function sendExistingAgents(
   // Include folderName and isExternal per agent
   const folderNames: Record<number, string> = {};
   const externalAgents: Record<number, boolean> = {};
+  const providerIds: Record<number, string> = {};
   for (const [id, agent] of agents) {
     if (agent.folderName) {
       folderNames[id] = agent.folderName;
@@ -541,6 +558,7 @@ export function sendExistingAgents(
     if (agent.isExternal) {
       externalAgents[id] = true;
     }
+    providerIds[id] = agent.providerId ?? 'claude';
   }
   console.log(
     `[Pixel Agents] sendExistingAgents: agents=${JSON.stringify(agentIds)}, meta=${JSON.stringify(agentMeta)}`,
@@ -552,6 +570,7 @@ export function sendExistingAgents(
     agentMeta,
     folderNames,
     externalAgents,
+    providerIds,
   });
   // Note: sendCurrentAgentStatuses is called separately AFTER layoutLoaded
   // so that agentStatus/agentToolStart messages arrive after characters are created.

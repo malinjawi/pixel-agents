@@ -502,6 +502,7 @@ function adoptTerminalForFile(
     linesProcessed: 0,
     seenUnknownRecordTypes: new Set(),
     hookDelivered: false,
+    providerId: 'claude',
     inputTokens: 0,
     outputTokens: 0,
   };
@@ -514,7 +515,7 @@ function adoptTerminalForFile(
   console.log(
     `[Pixel Agents] Watcher: Agent ${id} - adopted terminal "${terminal.name}" for ${path.basename(jsonlFile)}`,
   );
-  webview?.postMessage({ type: 'agentCreated', id });
+  webview?.postMessage({ type: 'agentCreated', id, providerId: 'claude' });
 
   startFileWatching(
     id,
@@ -688,6 +689,7 @@ export function scanForTeammateFiles(
       seenUnknownRecordTypes: new Set(),
       inputTokens: 0,
       outputTokens: 0,
+      providerId: 'claude',
       // Agent Teams fields
       agentName: teammateName,
       leadAgentId: parentAgentId,
@@ -708,6 +710,7 @@ export function scanForTeammateFiles(
       teammateName,
       parentAgentId,
       teamName: parentAgent?.teamName,
+      providerId: 'claude',
     });
 
     onAgentCreated?.(agent);
@@ -896,6 +899,7 @@ export function adoptExternalSessionFromHook(
       hadToolsInTurn: false,
       hookDelivered: true,
       hooksOnly: true,
+      providerId: 'claude',
       lastDataAt: Date.now(),
       linesProcessed: 0,
       seenUnknownRecordTypes: new Set(),
@@ -910,7 +914,7 @@ export function adoptExternalSessionFromHook(
         `[Pixel Agents] Hook: Agent ${id} - detected hooks-only external session${folderName ? ` (${folderName})` : ''}`,
       );
     }
-    webview?.postMessage({ type: 'agentCreated', id, folderName });
+    webview?.postMessage({ type: 'agentCreated', id, folderName, providerId: 'claude' });
     onAgentCreated?.(agent);
   }
 }
@@ -960,6 +964,7 @@ function adoptExternalSession(
     linesProcessed: 0,
     seenUnknownRecordTypes: new Set(),
     folderName,
+    providerId: 'claude',
     inputTokens: 0,
     outputTokens: 0,
   };
@@ -969,7 +974,7 @@ function adoptExternalSession(
 
   // Log is emitted by the caller (adoptExternalSessionFromHook or scanExternalDir)
   // to use the correct prefix (Hook: vs Watcher:).
-  webview?.postMessage({ type: 'agentCreated', id, isExternal: true, folderName });
+  webview?.postMessage({ type: 'agentCreated', id, isExternal: true, folderName, providerId: 'claude' });
 
   startFileWatching(
     id,
@@ -1280,6 +1285,7 @@ export function startStaleExternalAgentCheck(
 
     for (const [id, agent] of agents) {
       if (!agent.isExternal) continue;
+      if (agent.hooksOnly || !agent.jsonlFile) continue;
 
       // Only despawn if the JSONL file has been deleted from disk.
       // Inactive external agents stay alive so they can resume when

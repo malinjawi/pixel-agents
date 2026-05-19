@@ -66,6 +66,8 @@ export interface PersistedAgent {
   terminalName: string;
   /** Whether this agent was detected from an external source */
   isExternal?: boolean;
+  hooksOnly?: boolean;
+  providerId?: string;
   jsonlFile: string;
   projectDir: string;
   /** Workspace folder name (only set for multi-root workspaces) */

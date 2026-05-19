@@ -36,6 +36,7 @@ import {
   sendFloorTilesToWebview,
   sendWallTilesToWebview,
 } from './assetLoader.js';
+import { CodexIntegrationManager } from './codexIntegration.js';
 import { readConfig, writeConfig } from './configPersistence.js';
 import {
   GLOBAL_KEY_ALWAYS_SHOW_LABELS,
@@ -62,6 +63,7 @@ import {
 } from './fileWatcher.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import { readLayoutFromFile, watchLayoutFile, writeLayoutToFile } from './layoutPersistence.js';
+import { RooClineIntegrationManager } from './rooClineIntegration.js';
 import { setHookProvider } from './transcriptParser.js';
 import type { AgentState } from './types.js';
 
@@ -107,8 +109,14 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
   // ServerConfig is not stored as a field; use this.pixelAgentsServer?.getConfig() if needed.
   private hookEventHandler: HookEventHandler | null = null;
 
+  // Roo Code integration
+  private rooClineManager: RooClineIntegrationManager | null = null;
+  private codexManager: CodexIntegrationManager | null = null;
+
   constructor(private readonly context: vscode.ExtensionContext) {
     this.initHooks();
+    this.initRooCline();
+    this.initExternalAgentIntegrations();
   }
 
   private get extensionUri(): vscode.Uri {
@@ -266,6 +274,97 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       });
   }
 
+  private initRooCline(): void {
+    // Initialize Roo Code integration manager.
+    this.rooClineManager = new RooClineIntegrationManager(
+      this.nextAgentId,
+      this.agents,
+      this.webview,
+      this.persistAgents,
+    );
+
+    // Try to initialize (will silently fail if Roo Code is not installed).
+    this.rooClineManager.initialize().then((success) => {
+      if (success) {
+        console.log('[Pixel Agents] Roo Code integration initialized');
+      }
+    });
+  }
+
+  private initExternalAgentIntegrations(): void {
+    this.codexManager = new CodexIntegrationManager(
+      this.nextAgentId,
+      this.agents,
+      this.webview,
+      this.persistAgents,
+      this.watchAllSessions,
+    );
+    this.codexManager.start();
+
+  }
+
+  private async focusAgent(agent: AgentState): Promise<void> {
+    if (agent.terminalRef) {
+      agent.terminalRef.show();
+      return;
+    }
+
+    if (agent.leadAgentId !== undefined) {
+      const lead = this.agents.get(agent.leadAgentId);
+      if (lead?.terminalRef) {
+        lead.terminalRef.show();
+        return;
+      }
+    }
+
+    if (agent.providerId === 'codex') {
+      if (this.openCodexResumeTerminal(agent)) return;
+      if (agentBelongsToWorkspace(agent) && (await this.tryExecuteCommand('chatgpt.openSidebar'))) {
+        return;
+      }
+      if (agent.jsonlFile && fs.existsSync(agent.jsonlFile)) {
+        await vscode.window.showTextDocument(vscode.Uri.file(agent.jsonlFile), { preview: true });
+        void vscode.window.showInformationMessage(
+          'Pixel Agents: Codex CLI/sidebar is not available in this VS Code window, so the session file was opened instead.',
+        );
+      }
+      return;
+    }
+
+    if (agent.jsonlFile && fs.existsSync(agent.jsonlFile)) {
+      await vscode.window.showTextDocument(vscode.Uri.file(agent.jsonlFile), { preview: true });
+    }
+  }
+
+  private async tryExecuteCommand(command: string): Promise<boolean> {
+    try {
+      await vscode.commands.executeCommand(command);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private openCodexResumeTerminal(agent: AgentState): boolean {
+    if (!agent.sessionId) return false;
+    const codexCli = findCodexCli();
+    if (!codexCli) {
+      return false;
+    }
+    const cwd = fs.existsSync(agent.projectDir) ? agent.projectDir : os.homedir();
+    const terminal = vscode.window.createTerminal({
+      name: `Codex #${agent.id}`,
+      cwd,
+    });
+    agent.terminalRef = terminal;
+    terminal.show();
+    terminal.sendText(
+      `${shellQuote(codexCli)} resume -C ${shellQuote(cwd)} ${shellQuote(agent.sessionId)}`,
+    );
+    return true;
+  }
+
+
   /** Remove all teammates of a lead agent */
   /** Remove a single teammate agent (used by both hook callback and team config polling). */
   private removeTeammate(teammateAgentId: number, source: string): void {
@@ -333,6 +432,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
+    // Update Roo Code manager with webview reference.
+    if (this.rooClineManager) {
+      this.rooClineManager.setWebview(webviewView.webview);
+    }
+    this.codexManager?.setWebview(webviewView.webview);
+
     webviewView.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'openClaude') {
         const prevAgentIds = new Set(this.agents.keys());
@@ -362,15 +467,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       } else if (message.type === 'focusAgent') {
         const agent = this.agents.get(message.id);
         if (agent) {
-          if (agent.terminalRef) {
-            agent.terminalRef.show();
-          } else if (agent.leadAgentId !== undefined) {
-            // Teammate (tmux): focus the lead's terminal instead
-            const lead = this.agents.get(agent.leadAgentId);
-            if (lead?.terminalRef) {
-              lead.terminalRef.show();
-            }
-          }
+          await this.focusAgent(agent);
         }
       } else if (message.type === 'closeAgent') {
         const agent = this.agents.get(message.id);
@@ -380,6 +477,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           } else {
             // External agent — remove from tracking and dismiss the file
             // so the external scanner doesn't re-adopt it
+            if (agent.providerId === 'roo-code') {
+              this.rooClineManager?.unregisterAgent(message.id as number);
+            } else if (agent.providerId === 'codex') {
+              this.codexManager?.unregisterAgent(message.id as number);
+            }
             dismissedJsonlFiles.set(agent.jsonlFile, Date.now());
             removeAgent(
               message.id,
@@ -431,22 +533,23 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             dismissedJsonlFiles.delete(file);
           }
           this.globalDismissedFiles.clear();
+          this.codexManager?.scanNow();
         } else {
           // Remove all external agents not from the current workspace folders
-          const workspaceDirs = new Set<string>();
-          for (const folder of vscode.workspace.workspaceFolders ?? []) {
-            const dir = getProjectDirPath(folder.uri.fsPath);
-            if (dir) workspaceDirs.add(dir);
-          }
           const toRemove: number[] = [];
           for (const [id, agent] of this.agents) {
-            if (agent.isExternal && !workspaceDirs.has(agent.projectDir)) {
+            if (agent.isExternal && !agentBelongsToWorkspace(agent)) {
               toRemove.push(id);
             }
           }
           for (const id of toRemove) {
             const agent = this.agents.get(id);
             if (agent) {
+              if (agent.providerId === 'codex') {
+                this.codexManager?.unregisterAgent(id);
+              } else if (agent.providerId === 'roo-code') {
+                this.rooClineManager?.unregisterAgent(id);
+              }
               dismissedJsonlFiles.set(agent.jsonlFile, Date.now());
               this.globalDismissedFiles.add(agent.jsonlFile);
               this.knownJsonlFiles.delete(agent.jsonlFile);
@@ -502,6 +605,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           false,
         );
         this.watchAllSessions.current = watchAllSessions;
+        this.codexManager?.scanNow();
         const hooksEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_HOOKS_ENABLED, true);
         const hooksInfoShown = this.context.globalState.get<boolean>(
           GLOBAL_KEY_HOOKS_INFO_SHOWN,
@@ -706,6 +810,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           }
           diagnostics.push({
             id: agent.id,
+            providerId: agent.providerId ?? 'claude',
             projectDir: agent.projectDir,
             projectDirExists: fs.existsSync(agent.projectDir),
             jsonlFile: agent.jsonlFile,
@@ -934,18 +1039,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     this.hookEventHandler = null;
     this.layoutWatcher?.dispose();
     this.layoutWatcher = null;
-    for (const id of [...this.agents.keys()]) {
-      removeAgent(
-        id,
-        this.agents,
-        this.fileWatchers,
-        this.pollingTimers,
-        this.waitingTimers,
-        this.permissionTimers,
-        this.jsonlPollTimers,
-        this.persistAgents,
-      );
-    }
+    this.rooClineManager?.dispose();
+    this.rooClineManager = null;
+    this.codexManager?.dispose();
+    this.codexManager = null;
+    this.disposeAgentRuntimeState();
     if (this.projectScanTimer.current) {
       clearInterval(this.projectScanTimer.current);
       this.projectScanTimer.current = null;
@@ -958,6 +1056,35 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       clearInterval(this.staleCheckTimer);
       this.staleCheckTimer = null;
     }
+  }
+
+  private disposeAgentRuntimeState(): void {
+    for (const watcher of this.fileWatchers.values()) {
+      watcher.close();
+    }
+    this.fileWatchers.clear();
+
+    for (const timer of this.pollingTimers.values()) {
+      clearInterval(timer);
+    }
+    this.pollingTimers.clear();
+
+    for (const timer of this.jsonlPollTimers.values()) {
+      clearInterval(timer);
+    }
+    this.jsonlPollTimers.clear();
+
+    for (const timer of this.waitingTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.waitingTimers.clear();
+
+    for (const timer of this.permissionTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.permissionTimers.clear();
+
+    this.agents.clear();
   }
 }
 
@@ -974,4 +1101,99 @@ function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): s
   });
 
   return html;
+}
+
+function findCodexCli(): string | null {
+  const pathCandidates = (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((dir) => path.join(dir, process.platform === 'win32' ? 'codex.exe' : 'codex'));
+
+  const candidates = [
+    ...pathCandidates,
+    path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    path.join(os.homedir(), '.npm-global', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    path.join(os.homedir(), '.volta', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    path.join(os.homedir(), '.bun', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    path.join('/opt/homebrew/bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    path.join('/usr/local/bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    ...findCodexCliInExtensionDirs(),
+  ];
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function findCodexCliInExtensionDirs(): string[] {
+  const extensionRoots = [
+    path.join(os.homedir(), '.vscode', 'extensions'),
+    path.join(os.homedir(), '.vscode-insiders', 'extensions'),
+    path.join(os.homedir(), '.cursor', 'extensions'),
+    path.join(os.homedir(), '.windsurf', 'extensions'),
+    path.join(os.homedir(), '.bobide', 'extensions'),
+  ];
+  const binaryName = process.platform === 'win32' ? 'codex.exe' : 'codex';
+  const candidates: string[] = [];
+
+  for (const root of extensionRoots) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith('openai.chatgpt-')) continue;
+      const binRoot = path.join(root, entry.name, 'bin');
+      let binEntries: fs.Dirent[];
+      try {
+        binEntries = fs.readdirSync(binRoot, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const binEntry of binEntries) {
+        if (binEntry.isDirectory()) {
+          candidates.push(path.join(binRoot, binEntry.name, binaryName));
+        }
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function isFile(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function agentBelongsToWorkspace(agent: AgentState): boolean {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) return true;
+
+  const agentProjectDir = path.resolve(agent.projectDir);
+  return folders.some((folder) => {
+    const workspaceDir = path.resolve(folder.uri.fsPath);
+    if (isSameOrChildPath(agentProjectDir, workspaceDir)) return true;
+    return agentProjectDir === path.resolve(getProjectDirPath(folder.uri.fsPath));
+  });
+}
+
+function isSameOrChildPath(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }

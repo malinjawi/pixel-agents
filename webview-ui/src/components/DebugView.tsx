@@ -6,6 +6,7 @@ import { Button } from './ui/Button.js';
 
 interface AgentDiagnostics {
   id: number;
+  providerId?: string;
   projectDir: string;
   projectDirExists: boolean;
   jsonlFile: string;
@@ -14,6 +15,19 @@ interface AgentDiagnostics {
   fileOffset: number;
   lastDataAt: number;
   linesProcessed: number;
+}
+
+function providerLabel(providerId: string | undefined): string {
+  switch (providerId) {
+    case 'codex':
+      return 'Codex';
+    case 'roo-code':
+      return 'Roo Code';
+    case 'claude':
+      return 'Claude';
+    default:
+      return 'Agent';
+  }
 }
 
 interface DebugViewProps {
@@ -110,7 +124,7 @@ export function DebugView({
           <span
             className={`rounded-none py-6 px-10 text-xl ${isSelected ? 'text-white font-bold' : ''}`}
           >
-            Agent #{id}
+            {providerLabel(diag?.providerId)} #{id}
           </span>
           <Button
             variant="ghost"

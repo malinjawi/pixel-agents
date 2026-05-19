@@ -27,10 +27,12 @@ interface ToolOverlayProps {
   officeState: OfficeState;
   agents: number[];
   agentTools: Record<number, ToolActivity[]>;
+  agentStatuses: Record<number, string>;
   subagentCharacters: SubagentCharacter[];
   containerRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
   panRef: React.RefObject<{ x: number; y: number }>;
+  onFocusAgent: (id: number) => void;
   onCloseAgent: (id: number) => void;
   alwaysShowOverlay: boolean;
 }
@@ -39,6 +41,7 @@ interface ToolOverlayProps {
 function getActivityText(
   agentId: number,
   agentTools: Record<number, ToolActivity[]>,
+  agentStatuses: Record<number, string>,
   isActive: boolean,
 ): string {
   const tools = agentTools[agentId];
@@ -56,6 +59,8 @@ function getActivityText(
     }
   }
 
+  if (agentStatuses[agentId] === 'waiting') return 'Waiting for input';
+  if (isActive) return 'Thinking';
   return 'Idle';
 }
 
@@ -70,10 +75,12 @@ export function ToolOverlay({
   officeState,
   agents,
   agentTools,
+  agentStatuses,
   subagentCharacters,
   containerRef,
   zoom,
   panRef,
+  onFocusAgent,
   onCloseAgent,
   alwaysShowOverlay,
 }: ToolOverlayProps) {
@@ -136,7 +143,7 @@ export function ToolOverlay({
             activityText = sub ? sub.label : 'Subtask';
           }
         } else {
-          activityText = getActivityText(id, agentTools, ch.isActive);
+          activityText = getActivityText(id, agentTools, agentStatuses, ch.isActive);
         }
 
         // Determine dot color
@@ -148,7 +155,7 @@ export function ToolOverlay({
         let dotColor: string | null = null;
         if (hasPermission) {
           dotColor = 'var(--color-status-permission)';
-        } else if (isActive && hasActiveTools) {
+        } else if (isActive || hasActiveTools) {
           dotColor = 'var(--color-status-active)';
         }
 
@@ -157,7 +164,7 @@ export function ToolOverlay({
         const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
         const totalTokens = ch.inputTokens + ch.outputTokens;
         const tokenRatio = totalTokens / MAX_CONTEXT_TOKENS;
-        const hasExtraLines = !!(ch.folderName || teamRoleLabel);
+        const hasExtraLines = !!(ch.folderName || teamRoleLabel || ch.providerName);
 
         return (
           <div
@@ -166,12 +173,19 @@ export function ToolOverlay({
             style={{
               left: screenX,
               top: screenY - (hasExtraLines ? 34 : 28),
-              pointerEvents: isSelected ? 'auto' : 'none',
+              pointerEvents: isSub ? 'none' : 'auto',
               opacity: alwaysShowOverlay && !isSelected && !isHovered ? (isSub ? 0.5 : 0.75) : 1,
               zIndex: isSelected ? 42 : 41,
             }}
           >
-            <div className="flex items-center border-border px-8 pt-2 pb-4 gap-5 pixel-panel whitespace-nowrap max-w-2xs">
+            <div
+              className="flex items-center border-border px-8 pt-2 pb-4 gap-5 pixel-panel whitespace-nowrap max-w-2xs cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                onFocusAgent(id);
+              }}
+              title="Focus agent chat"
+            >
               {dotColor && (
                 <span
                   className={`w-6 h-6 rounded-full shrink-0 ${isActive && !hasPermission ? 'pixel-pulse' : ''}`}
@@ -189,6 +203,11 @@ export function ToolOverlay({
                     }}
                   >
                     {teamRoleLabel}
+                  </span>
+                )}
+                {ch.providerName && !isSub && (
+                  <span className="text-2xs leading-none overflow-hidden text-ellipsis block text-accent-bright">
+                    {ch.providerName}
                   </span>
                 )}
                 <span
